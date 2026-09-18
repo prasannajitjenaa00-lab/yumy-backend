@@ -8,7 +8,11 @@ const { notFound, errorHandler } = require("./middleware/errorMiddleware");
 const app = express();
 
 app.use(helmet());
-app.use(cors({ origin: env.CLIENT_URL, credentials: true }));
+const corsOptions = {
+  origin: (origin, callback) => callback(null, true),
+  credentials: true,
+};
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 if (env.NODE_ENV !== "test") app.use(morgan("dev"));

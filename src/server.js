@@ -10,7 +10,7 @@ async function start() {
 
   const server = http.createServer(app);
   const io = new Server(server, {
-    cors: { origin: env.CLIENT_URL, credentials: true },
+    cors: { origin: (origin, callback) => callback(null, true), credentials: true },
   });
   initSocket(io);
   app.set("io", io);
