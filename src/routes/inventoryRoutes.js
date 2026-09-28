@@ -6,6 +6,7 @@ const authorize = require("../middleware/roleMiddleware");
 router.use(protect);
 router.get("/", ctrl.list);
 router.get("/low-stock", ctrl.lowStock);
+router.get("/expiring", ctrl.expiring);
 router.get("/:id", ctrl.getOne);
 router.get("/:itemId/history", ctrl.history);
 router.post("/", authorize("OWNER", "MANAGER"), ctrl.create);

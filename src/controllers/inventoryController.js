@@ -38,4 +38,17 @@ async function history(req, res) {
   res.json({ success: true, message: "OK", data: txns });
 }
 
-module.exports = { ...base, lowStock, adjustStock, history };
+async function expiring(req, res) {
+  const days = Number(req.query.days) || 7;
+  const targetDate = new Date();
+  targetDate.setDate(targetDate.getDate() + days);
+
+  const items = await InventoryItem.find({
+    expiryDate: { $lte: targetDate },
+    currentStock: { $gt: 0 },
+  }).sort({ expiryDate: 1 });
+
+  res.json({ success: true, message: "OK", data: items });
+}
+
+module.exports = { ...base, lowStock, adjustStock, history, expiring };
