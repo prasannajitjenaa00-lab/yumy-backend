@@ -11,7 +11,6 @@ const ROLE_HOME = {
   OWNER: "/owner/dashboard",
   MANAGER: "/manager/dashboard",
   CASHIER: "/cashier/pos",
-  WAITER: "/waiter/orders",
   KITCHEN: "/kitchen",
 };
 

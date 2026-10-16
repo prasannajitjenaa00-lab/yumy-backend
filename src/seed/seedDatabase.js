@@ -216,7 +216,6 @@ async function seed() {
     { name: env.OWNER_NAME, email: env.OWNER_EMAIL, password: env.OWNER_PASSWORD, role: "OWNER" },
     { name: "Demo Manager", email: "manager@example.com", password: "manager123", role: "MANAGER" },
     { name: "Demo Cashier", email: "cashier@example.com", password: "cashier123", role: "CASHIER" },
-    { name: "Demo Waiter", email: "waiter@example.com", password: "waiter123", role: "WAITER" },
     { name: "Demo Kitchen", email: "kitchen@example.com", password: "kitchen123", role: "KITCHEN" },
   ]);
 
@@ -262,7 +261,6 @@ async function seed() {
   console.log(`  OWNER    ${env.OWNER_EMAIL} / ${env.OWNER_PASSWORD}`);
   console.log("  MANAGER  manager@example.com / manager123");
   console.log("  CASHIER  cashier@example.com / cashier123");
-  console.log("  WAITER   waiter@example.com / waiter123");
   console.log("  KITCHEN  kitchen@example.com / kitchen123");
 
   await mongoose.disconnect();

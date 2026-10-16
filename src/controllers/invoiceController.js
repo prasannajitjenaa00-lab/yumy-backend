@@ -36,6 +36,13 @@ async function generate(req, res) {
     });
   }
 
+  if (order.billStatus !== "PAID") {
+    order.billStatus = "GENERATED";
+    order.billProcessedAt = new Date();
+    order.billProcessedBy = req.user._id;
+    await order.save();
+  }
+
   res.status(201).json({ success: true, message: "Invoice generated successfully", data: invoice });
 }
 

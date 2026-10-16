@@ -35,11 +35,11 @@ async function deductInventoryForOrder(order, userId) {
 }
 
 const ORDER_TRANSITIONS = {
-  DRAFT: ["OPEN", "CANCELLED"],
-  OPEN: ["CONFIRMED", "CANCELLED"],
-  CONFIRMED: ["PREPARING", "CANCELLED"],
-  PREPARING: ["READY", "CANCELLED"],
-  READY: ["SERVED"],
+  DRAFT: ["OPEN", "CONFIRMED", "CANCELLED"],
+  OPEN: ["CONFIRMED", "PREPARING", "READY", "SERVED", "CANCELLED"],
+  CONFIRMED: ["PREPARING", "READY", "SERVED", "CANCELLED"],
+  PREPARING: ["READY", "SERVED", "CANCELLED"],
+  READY: ["SERVED", "COMPLETED", "CANCELLED"],
   SERVED: ["COMPLETED"],
   COMPLETED: ["REFUNDED"],
   CANCELLED: [],
@@ -83,24 +83,18 @@ async function getOne(req, res) {
 }
 
 async function create(req, res) {
-  const { orderType, table, customer, items = [], notes, discount = 0 } = req.body;
-
-  if (orderType === "DINE_IN" && !table) {
-    return res.status(400).json({ success: false, message: "Table is required for dine-in orders" });
-  }
+  const { orderType = "DINE_IN", table, customer, items = [], notes, discount = 0, taxRate, paymentMethod } = req.body;
 
   let resolvedTable = null;
-  if (orderType === "DINE_IN") {
+  if (table) {
     resolvedTable = await Table.findById(table);
-    if (!resolvedTable) return res.status(404).json({ success: false, message: "Table not found" });
-    if (resolvedTable.status === "OCCUPIED" && resolvedTable.currentOrder) {
-      return res.status(409).json({ success: false, message: "Table already has an open order" });
-    }
   }
 
   const menuIds = items.map((i) => i.menuItem);
   const menuDocs = await MenuItem.find({ _id: { $in: menuIds } });
   const menuMap = new Map(menuDocs.map((m) => [String(m._id), m]));
+
+  const taxOverridePercent = taxRate !== undefined && taxRate !== null && !isNaN(Number(taxRate)) ? Number(taxRate) : null;
 
   const orderItems = items.map((i) => {
     const menuItem = menuMap.get(String(i.menuItem));
@@ -110,23 +104,35 @@ async function create(req, res) {
       menuItem: menuItem._id,
       name: menuItem.name,
       price: menuItem.price,
-      taxPercent: menuItem.taxPercent,
+      taxPercent: taxOverridePercent !== null ? taxOverridePercent : menuItem.taxPercent,
       quantity: i.quantity,
       notes: i.notes,
     };
   });
 
-  const totals = calculateOrderTotals({ items: orderItems, discount });
+  const totals = calculateOrderTotals({ items: orderItems, discount, taxOverridePercent });
   const orderNumber = await generateOrderNumber();
 
   let resolvedCustomer = null;
-  if (customer && customer.phone) {
-    resolvedCustomer = await Customer.findOneAndUpdate(
-      { phone: customer.phone },
-      { $setOnInsert: { name: customer.name || "Guest", phone: customer.phone } },
-      { upsert: true, new: true }
-    );
+  if (customer && (customer.phone || customer.name)) {
+    const phone = customer.phone ? String(customer.phone).trim() : "";
+    const name = customer.name ? String(customer.name).trim() : "Guest";
+    try {
+      if (phone) {
+        resolvedCustomer = await Customer.findOneAndUpdate(
+          { phone },
+          { $set: { name: name || "Guest" }, $setOnInsert: { phone } },
+          { upsert: true, new: true }
+        );
+      } else if (name) {
+        resolvedCustomer = await Customer.create({ name });
+      }
+    } catch (custErr) {
+      console.warn("Customer find/create fallback:", custErr.message);
+    }
   }
+
+  const isPaidAtCounter = Boolean(paymentMethod);
 
   const order = await Order.create({
     orderNumber,
@@ -138,8 +144,25 @@ async function create(req, res) {
     discount,
     ...totals,
     orderStatus: "DRAFT",
+    paymentStatus: isPaidAtCounter ? "PAID" : "UNPAID",
+    paymentMethod: isPaidAtCounter ? paymentMethod : null,
+    billStatus: isPaidAtCounter ? "PAID" : "NOT_REQUESTED",
     createdBy: req.user._id,
   });
+
+  if (isPaidAtCounter) {
+    try {
+      const Payment = require("../models/Payment");
+      await Payment.create({
+        order: order._id,
+        amount: order.grandTotal,
+        method: paymentMethod,
+        receivedBy: req.user._id,
+      });
+    } catch (payErr) {
+      console.warn("Auto-payment recording error:", payErr.message);
+    }
+  }
 
   if (resolvedTable) {
     resolvedTable.status = "OCCUPIED";
@@ -190,12 +213,6 @@ async function updateStatus(req, res) {
   if (!order) return res.status(404).json({ success: false, message: "Order not found" });
   const { status } = req.body;
 
-  if (req.user?.role === "WAITER") {
-    if (status !== "SERVED" || order.orderStatus !== "READY") {
-      return res.status(403).json({ success: false, message: "Waiters can only mark READY orders as SERVED." });
-    }
-  }
-
   const allowed = ORDER_TRANSITIONS[order.orderStatus] || [];
   if (!allowed.includes(status)) {
     return res.status(400).json({ success: false, message: `Cannot move order from ${order.orderStatus} to ${status}` });
@@ -216,24 +233,28 @@ async function updateStatus(req, res) {
     } catch (err) {
       console.error("KOT update error on serve:", err);
     }
+    if (order.paymentStatus === "PAID") {
+      order.orderStatus = "COMPLETED";
+      order.statusHistory.push({ previousStatus: "SERVED", newStatus: "COMPLETED", changedBy: req.user._id });
+    }
   }
 
   await order.save();
 
-  if (status === "COMPLETED" && order.table) {
+  if (order.orderStatus === "COMPLETED" && order.table) {
     await Table.findByIdAndUpdate(order.table, { status: "AVAILABLE", currentOrder: null });
   }
-  if (status === "COMPLETED") {
+  if (order.orderStatus === "COMPLETED") {
     await deductInventoryForOrder(order, req.user._id);
   }
   if (status === "CANCELLED" && order.table) {
     await Table.findByIdAndUpdate(order.table, { status: "AVAILABLE", currentOrder: null });
   }
 
-  getIO(req)?.emit("order:status", { orderId: order._id, orderNumber: order.orderNumber, status });
-  await recordAudit({ user: req.user, action: "UPDATE_STATUS", module: "ORDERS", recordId: order._id, newValue: { status }, ip: req.ip });
+  getIO(req)?.emit("order:status", { orderId: order._id, orderNumber: order.orderNumber, status: order.orderStatus });
+  await recordAudit({ user: req.user, action: "UPDATE_STATUS", module: "ORDERS", recordId: order._id, newValue: { status: order.orderStatus }, ip: req.ip });
 
-  res.json({ success: true, message: `Order status updated to ${status}`, data: order });
+  res.json({ success: true, message: `Order status updated to ${order.orderStatus}`, data: order });
 }
 
 async function cancel(req, res) {
@@ -289,14 +310,15 @@ async function requestBill(req, res) {
     tableNumber: order.table?.number || "N/A",
     grandTotal: order.grandTotal,
     itemCount: order.items?.length || 0,
-    requestedBy: req.user.name || "Waiter",
+    requestedBy: req.user.name || "Staff",
     billRequestedAt: order.billRequestedAt,
   };
 
   getIO(req)?.emit("bill:request", payload);
   await recordAudit({ user: req.user, action: "BILL_REQUESTED", module: "ORDERS", recordId: order._id, newValue: payload, ip: req.ip });
 
-  res.json({ success: true, message: `Bill request created for Table ${order.table?.number || ""}`, data: order });
+  const targetLabel = order.table?.number ? `Table ${order.table.number}` : `Order #${order.orderNumber}`;
+  res.json({ success: true, message: `Bill request created for ${targetLabel}`, data: order });
 }
 
 async function processBill(req, res) {

@@ -42,6 +42,7 @@ const orderSchema = new mongoose.Schema(
     grandTotal: { type: Number, default: 0 },
     orderStatus: { type: String, enum: ORDER_STATUSES, default: "DRAFT" },
     paymentStatus: { type: String, enum: PAYMENT_STATUSES, default: "UNPAID" },
+    paymentMethod: { type: String, default: null },
     billStatus: { type: String, enum: ["NOT_REQUESTED", "REQUESTED", "PROCESSING", "GENERATED", "PAID"], default: "NOT_REQUESTED" },
     billRequestedAt: { type: Date },
     billRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

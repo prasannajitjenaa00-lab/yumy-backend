@@ -47,12 +47,14 @@ async function recordPayment(req, res) {
   
   if (isFullyPaid) {
     order.billStatus = "PAID";
-    order.orderStatus = "COMPLETED";
+    if (order.orderStatus === "SERVED") {
+      order.orderStatus = "COMPLETED";
+    }
   }
   
   await order.save();
 
-  if (isFullyPaid) {
+  if (isFullyPaid && order.orderStatus === "COMPLETED") {
     if (order.table) {
       await Table.findByIdAndUpdate(order.table, { status: "AVAILABLE", currentOrder: null });
       getIO(req)?.emit("table:update", { tableId: order.table, status: "AVAILABLE" });

@@ -4,8 +4,8 @@ const protect = require("../middleware/authMiddleware");
 const authorize = require("../middleware/roleMiddleware");
 
 router.use(protect);
-router.post("/", authorize("OWNER", "MANAGER", "CASHIER", "WAITER"), ctrl.generate);
+router.post("/", authorize("OWNER", "MANAGER", "CASHIER"), ctrl.generate);
 router.get("/order/:orderId", ctrl.getByOrder);
-router.patch("/:id/reprint", authorize("OWNER", "MANAGER", "CASHIER", "WAITER"), ctrl.reprint);
+router.patch("/:id/reprint", authorize("OWNER", "MANAGER", "CASHIER"), ctrl.reprint);
 
 module.exports = router;

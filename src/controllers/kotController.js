@@ -4,11 +4,11 @@ const generateKOTNumber = require("../utils/generateKOTNumber");
 const { recordAudit } = require("../middleware/auditMiddleware");
 
 const KOT_TRANSITIONS = {
-  PENDING: ["SENT", "CANCELLED"],
-  SENT: ["ACCEPTED", "CANCELLED"],
-  ACCEPTED: ["PREPARING", "CANCELLED"],
-  PREPARING: ["READY"],
-  READY: ["SERVED"],
+  PENDING: ["SENT", "ACCEPTED", "CANCELLED"],
+  SENT: ["ACCEPTED", "PREPARING", "READY", "CANCELLED"],
+  ACCEPTED: ["PREPARING", "READY", "CANCELLED"],
+  PREPARING: ["READY", "SERVED", "CANCELLED"],
+  READY: ["SERVED", "PREPARING", "CANCELLED"],
   SERVED: [],
   CANCELLED: [],
 };
@@ -22,7 +22,14 @@ async function list(req, res) {
   const query = {};
   if (status) query.status = status;
   else query.status = { $ne: "SERVED" };
-  const kots = await KOT.find(query).populate("table", "number zone").sort({ createdAt: 1 });
+  const kots = await KOT.find(query)
+    .populate("createdBy", "name role email phone")
+    .populate({
+      path: "order",
+      select: "orderNumber orderType orderStatus notes customer createdBy paymentStatus paymentMethod",
+      populate: { path: "createdBy customer", select: "name role phone" }
+    })
+    .sort({ createdAt: 1 });
   res.json({ success: true, message: "OK", data: kots });
 }
 
@@ -55,9 +62,18 @@ async function send(req, res) {
   });
 
   selectedItems.forEach((i) => { i.kotStatus = "SENT"; });
-  if (order.orderStatus === "OPEN") order.orderStatus = "CONFIRMED";
+  if (order.orderStatus === "OPEN" || order.orderStatus === "DRAFT") order.orderStatus = "CONFIRMED";
   await order.save();
 
+  // Populate order details & cashier name before emitting
+  await kot.populate([
+    { path: "createdBy", select: "name role email phone" },
+    {
+      path: "order",
+      select: "orderNumber orderType orderStatus notes customer createdBy paymentStatus paymentMethod",
+      populate: { path: "createdBy customer", select: "name role phone" },
+    },
+  ]);
   getIO(req)?.emit("kot:new", kot);
   await recordAudit({ user: req.user, action: "CREATE", module: "KOT", recordId: kot._id, newValue: { kotNumber }, ip: req.ip });
 
@@ -65,9 +81,6 @@ async function send(req, res) {
 }
 
 async function updateStatus(req, res) {
-  if (req.user?.role === "WAITER") {
-    return res.status(403).json({ success: false, message: "Waiters are not authorized to update KOT status directly." });
-  }
   const kot = await KOT.findById(req.params.id);
   if (!kot) return res.status(404).json({ success: false, message: "KOT not found" });
   const { status } = req.body;
@@ -90,12 +103,29 @@ async function updateStatus(req, res) {
       order.orderStatus = "READY";
     }
     if (status === "SERVED" && order.items.every((i) => i.kotStatus === "SERVED")) {
-      order.orderStatus = "SERVED";
+      order.orderStatus = order.paymentStatus === "PAID" ? "COMPLETED" : "SERVED";
+      if (order.orderStatus === "COMPLETED") {
+        try {
+          const { deductInventoryForOrder } = require("./orderController");
+          await deductInventoryForOrder(order, req.user._id);
+        } catch (invErr) {
+          console.error("Inventory deduction error on KOT serve:", invErr);
+        }
+      }
     }
     await order.save();
+    getIO(req)?.emit("order:status", { orderId: order._id, orderNumber: order.orderNumber, status: order.orderStatus });
   }
 
-  getIO(req)?.emit("kot:status", { kotId: kot._id, kotNumber: kot.kotNumber, status });
+  await kot.populate([
+    { path: "createdBy", select: "name role email phone" },
+    {
+      path: "order",
+      select: "orderNumber orderType orderStatus notes customer createdBy paymentStatus paymentMethod",
+      populate: { path: "createdBy customer", select: "name role phone" },
+    },
+  ]);
+  getIO(req)?.emit("kot:status", { kotId: kot._id, kotNumber: kot.kotNumber, status, kot });
   res.json({ success: true, message: `KOT status updated to ${status}`, data: kot });
 }
 
