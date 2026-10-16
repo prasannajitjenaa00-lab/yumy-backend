@@ -164,6 +164,17 @@ async function create(req, res) {
     }
   }
 
+  if (resolvedCustomer) {
+    try {
+      await Customer.findByIdAndUpdate(resolvedCustomer._id, {
+        $inc: { totalOrders: 1, totalSpending: order.grandTotal },
+        $set: { lastOrderAt: new Date() },
+      });
+    } catch (custUpdateErr) {
+      console.warn("Failed to update customer stats:", custUpdateErr.message);
+    }
+  }
+
   if (resolvedTable) {
     resolvedTable.status = "OCCUPIED";
     resolvedTable.currentOrder = order._id;
