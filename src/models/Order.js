@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const ORDER_STATUSES = ["DRAFT", "OPEN", "CONFIRMED", "PREPARING", "READY", "SERVED", "COMPLETED", "CANCELLED", "REFUNDED"];
 const PAYMENT_STATUSES = ["UNPAID", "PARTIALLY_PAID", "PAID", "PARTIALLY_REFUNDED", "REFUNDED", "VOID"];
-const ORDER_TYPES = ["DINE_IN", "TAKEAWAY", "DELIVERY"];
+const ORDER_TYPES = ["DINE_IN", "TAKEAWAY", "DELIVERY", "COUNTER"];
 
 const orderItemSchema = new mongoose.Schema(
   {

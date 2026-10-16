@@ -103,6 +103,13 @@ async function dashboard(req, res) {
   const availableTables = await require("../models/Table").countDocuments({ status: "AVAILABLE" });
   const lowStockItems = await InventoryItem.countDocuments({ $expr: { $lte: ["$currentStock", "$minimumStock"] } });
 
+  const KOT = require("../models/KOT");
+  const pendingKots = await KOT.countDocuments({ status: { $in: ["PENDING", "SENT", "ACCEPTED"] } });
+  const preparingCount = await KOT.countDocuments({ status: "PREPARING" });
+  const readyCount = await KOT.countDocuments({ status: "READY" });
+  const preparingOrders = Math.max(preparingCount, todaysOrders.filter((o) => o.orderStatus === "PREPARING").length);
+  const readyOrders = Math.max(readyCount, todaysOrders.filter((o) => o.orderStatus === "READY").length);
+
   res.json({
     success: true,
     message: "OK",
@@ -112,9 +119,9 @@ async function dashboard(req, res) {
       todaysProfit: round2(todaysSales - expensesTotal),
       activeTables,
       availableTables,
-      pendingKots: await require("../models/KOT").countDocuments({ status: { $in: ["PENDING", "SENT"] } }),
-      preparingOrders: todaysOrders.filter((o) => o.orderStatus === "PREPARING").length,
-      readyOrders: todaysOrders.filter((o) => o.orderStatus === "READY").length,
+      pendingKots,
+      preparingOrders,
+      readyOrders,
       unpaidOrders: todaysOrders.filter((o) => o.paymentStatus === "UNPAID").length,
       lowStockItems,
       todaysExpenses: expensesTotal,
