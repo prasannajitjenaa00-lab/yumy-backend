@@ -1,30 +1,31 @@
 const Order = require("../models/Order");
 
 async function generateOrderNumber() {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const datePart = `${year}${month}${day}`;
-  const prefix = `ORD-${datePart}-`;
+  const prefix = "ORD";
 
-  const latestOrder = await Order.findOne({
-    orderNumber: { $regex: `^${prefix}` },
-  }).sort({ orderNumber: -1 });
+  // Find all existing orders matching ORD + digits (e.g. ORD00001, ORD00002)
+  const existingOrders = await Order.find(
+    { orderNumber: { $regex: `^${prefix}\\d+$` } },
+    { orderNumber: 1 }
+  ).lean();
 
-  let seq = 1;
-  if (latestOrder && latestOrder.orderNumber) {
-    const parts = latestOrder.orderNumber.split("-");
-    const lastSeq = parseInt(parts[parts.length - 1], 10);
-    if (!isNaN(lastSeq)) {
-      seq = lastSeq + 1;
+  let maxSeq = 0;
+  for (const o of existingOrders) {
+    if (o.orderNumber) {
+      const numStr = o.orderNumber.slice(prefix.length);
+      const num = parseInt(numStr, 10);
+      if (!isNaN(num) && num > maxSeq) {
+        maxSeq = num;
+      }
     }
   }
 
-  let candidate = `${prefix}${String(seq).padStart(4, "0")}`;
+  let seq = maxSeq + 1;
+  let candidate = `${prefix}${String(seq).padStart(5, "0")}`;
+
   while (await Order.exists({ orderNumber: candidate })) {
     seq += 1;
-    candidate = `${prefix}${String(seq).padStart(4, "0")}`;
+    candidate = `${prefix}${String(seq).padStart(5, "0")}`;
   }
 
   return candidate;

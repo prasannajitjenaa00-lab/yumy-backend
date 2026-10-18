@@ -111,7 +111,6 @@ async function create(req, res) {
   });
 
   const totals = calculateOrderTotals({ items: orderItems, discount, taxOverridePercent });
-  const orderNumber = await generateOrderNumber();
 
   let resolvedCustomer = null;
   if (customer && (customer.phone || customer.name)) {
@@ -134,21 +133,37 @@ async function create(req, res) {
 
   const isPaidAtCounter = Boolean(paymentMethod);
 
-  const order = await Order.create({
-    orderNumber,
-    orderType,
-    table: resolvedTable ? resolvedTable._id : null,
-    customer: resolvedCustomer ? resolvedCustomer._id : null,
-    items: orderItems,
-    notes,
-    discount,
-    ...totals,
-    orderStatus: "DRAFT",
-    paymentStatus: isPaidAtCounter ? "PAID" : "UNPAID",
-    paymentMethod: isPaidAtCounter ? paymentMethod : null,
-    billStatus: isPaidAtCounter ? "PAID" : "NOT_REQUESTED",
-    createdBy: req.user._id,
-  });
+  // Robust unique order creation with automatic retry on collision
+  let order = null;
+  let attempts = 0;
+  let orderNumber = "";
+  while (!order && attempts < 5) {
+    attempts += 1;
+    orderNumber = await generateOrderNumber();
+    try {
+      order = await Order.create({
+        orderNumber,
+        orderType,
+        table: resolvedTable ? resolvedTable._id : null,
+        customer: resolvedCustomer ? resolvedCustomer._id : null,
+        items: orderItems,
+        notes,
+        discount,
+        ...totals,
+        orderStatus: "DRAFT",
+        paymentStatus: isPaidAtCounter ? "PAID" : "UNPAID",
+        paymentMethod: isPaidAtCounter ? paymentMethod : null,
+        billStatus: isPaidAtCounter ? "PAID" : "NOT_REQUESTED",
+        createdBy: req.user._id,
+      });
+    } catch (createErr) {
+      if ((createErr.code === 11000 || createErr.message?.includes("E11000")) && attempts < 5) {
+        console.warn(`Order number collision on ${orderNumber}, retrying unique generation (attempt ${attempts})...`);
+        continue;
+      }
+      throw createErr;
+    }
+  }
 
   if (isPaidAtCounter) {
     try {
@@ -181,7 +196,7 @@ async function create(req, res) {
     await resolvedTable.save();
   }
 
-  await recordAudit({ user: req.user, action: "CREATE", module: "ORDERS", recordId: order._id, newValue: { orderNumber }, ip: req.ip });
+  await recordAudit({ user: req.user, action: "CREATE", module: "ORDERS", recordId: order._id, newValue: { orderNumber: order.orderNumber }, ip: req.ip });
   getIO(req)?.emit("order:new", { orderId: order._id, orderNumber: order.orderNumber });
 
   res.status(201).json({ success: true, message: "Order created successfully", data: order });
