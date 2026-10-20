@@ -187,39 +187,69 @@ const DUMMY_MENU = [
 ];
 
 async function seed() {
+  // Safety Guard: Prevent running in production unless explicitly opted in via ALLOW_SAFE_SEED
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_SAFE_SEED !== "true") {
+    console.warn("\n====================================================================");
+    console.warn("[seed] WARNING: Seeding is blocked in production environment (NODE_ENV=production)");
+    console.warn("[seed] to safeguard live restaurant data.");
+    console.warn("[seed] If you intentionally need to seed missing demo records in production,");
+    console.warn("[seed] set ALLOW_SAFE_SEED=true in your environment.");
+    console.warn("====================================================================\n");
+    process.exit(0);
+  }
+
   await connectDB();
-  console.log("[seed] Clearing demo collections...");
-  await Promise.all([
-    User.deleteMany({}),
-    Category.deleteMany({}),
-    MenuItem.deleteMany({}),
-    Table.deleteMany({}),
-    InventoryItem.deleteMany({}),
-    Setting.deleteMany({}),
-  ]);
+  console.log("[seed] Running safe, non-destructive database seed...");
 
-  console.log("[seed] Creating settings...");
-  await Setting.create({
-    key: "restaurant",
-    restaurantName: "Yummy Yards",
-    address: "Janpath, Bhubaneswar, Odisha",
-    phone: "+91-9000000000",
-    gstin: "21ABCDE1234F1Z5",
-    gstPercent: 5,
-    cgstPercent: 2.5,
-    sgstPercent: 2.5,
-    tableCount: 20,
-  });
+  // 1. SAFE SETTINGS SEED (Create only if not already present)
+  console.log("[seed] Checking restaurant settings...");
+  const existingSetting = await Setting.findOne({ key: "restaurant" });
+  if (existingSetting) {
+    console.log("[seed] Restaurant settings already exist. Preserving existing configuration.");
+  } else {
+    console.log("[seed] Creating initial restaurant settings...");
+    await Setting.create({
+      key: "restaurant",
+      restaurantName: "Yummy Yards",
+      address: "Janpath, Bhubaneswar, Odisha",
+      phone: "+91-9000000000",
+      gstin: "21ABCDE1234F1Z5",
+      gstPercent: 5,
+      cgstPercent: 2.5,
+      sgstPercent: 2.5,
+      tableCount: 20,
+    });
+    console.log("[seed] Initial settings created.");
+  }
 
-  console.log("[seed] Creating users (DEMO)...");
-  await User.create([
+  // 2. SAFE USER SEED (Never overwrite or reset existing users/passwords)
+  console.log("[seed] Checking demo & staff users...");
+  const seedUsers = [
     { name: env.OWNER_NAME, email: env.OWNER_EMAIL, password: env.OWNER_PASSWORD, role: "OWNER" },
     { name: "Demo Manager", email: "manager@example.com", password: "manager123", role: "MANAGER" },
     { name: "Demo Cashier", email: "cashier@example.com", password: "cashier123", role: "CASHIER" },
     { name: "Demo Kitchen", email: "kitchen@example.com", password: "kitchen123", role: "KITCHEN" },
-  ]);
+  ];
 
-  console.log("[seed] Creating categories & menu (DEMO)...");
+  for (const u of seedUsers) {
+    if (!u.email) continue;
+    const normalizedEmail = u.email.toLowerCase().trim();
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      console.log(`[seed] User ${normalizedEmail} (${existingUser.role}) already exists. Preserving existing record.`);
+    } else {
+      await User.create({
+        name: u.name,
+        email: normalizedEmail,
+        password: u.password,
+        role: u.role,
+      });
+      console.log(`[seed] Created missing user: ${normalizedEmail} (${u.role})`);
+    }
+  }
+
+  // 3. SAFE CATEGORY SEED (Create missing categories, preserve existing)
+  console.log("[seed] Checking categories...");
   const categoryNames = [
     "Starters",
     "Main Course",
@@ -229,39 +259,69 @@ async function seed() {
     "Beverages",
     "Desserts",
   ];
-  const categories = await Category.create(categoryNames.map((name, i) => ({ name, sortOrder: i })));
-  const catMap = Object.fromEntries(categories.map((c) => [c.name, c._id]));
 
-  for (const item of DUMMY_MENU) {
-    const catId = catMap[item.categoryName];
-    if (catId) {
-      await MenuItem.create({
-        name: item.name,
-        category: catId,
-        price: item.price,
-        taxPercent: 5,
-        foodType: item.foodType,
-        description: item.description,
-        image: item.image,
-        isAvailable: true,
-        isActive: true,
-      });
+  for (let i = 0; i < categoryNames.length; i += 1) {
+    const name = categoryNames[i];
+    const existingCat = await Category.findOne({ name });
+    if (!existingCat) {
+      await Category.create({ name, sortOrder: i });
+      console.log(`[seed] Created missing category: ${name}`);
     }
   }
 
-  console.log("[seed] Creating tables (DEMO)...");
-  const tableDocs = [];
-  for (let i = 1; i <= 20; i += 1) {
-    const zone = i <= 10 ? "Main Hall" : i <= 16 ? "Garden" : "Terrace";
-    tableDocs.push({ number: i, zone, capacity: 4 });
-  }
-  await Table.create(tableDocs);
+  const allCategories = await Category.find({});
+  const catMap = Object.fromEntries(allCategories.map((c) => [c.name, c._id]));
 
-  console.log("[seed] Done. Demo login credentials:");
-  console.log(`  OWNER    ${env.OWNER_EMAIL} / ${env.OWNER_PASSWORD}`);
-  console.log("  MANAGER  manager@example.com / manager123");
-  console.log("  CASHIER  cashier@example.com / cashier123");
-  console.log("  KITCHEN  kitchen@example.com / kitchen123");
+  // 4. SAFE MENU ITEMS SEED (Create missing items only, never overwrite existing)
+  console.log("[seed] Checking menu items...");
+  let menuItemsCreated = 0;
+  for (const item of DUMMY_MENU) {
+    const catId = catMap[item.categoryName];
+    if (!catId) continue;
+
+    const existingMenuItem = await MenuItem.findOne({ name: item.name });
+    if (existingMenuItem) {
+      // Preserve existing prices, images, descriptions, recipes
+      continue;
+    }
+
+    await MenuItem.create({
+      name: item.name,
+      category: catId,
+      price: item.price,
+      taxPercent: 5,
+      foodType: item.foodType,
+      description: item.description,
+      image: item.image,
+      isAvailable: true,
+      isActive: true,
+    });
+    menuItemsCreated += 1;
+  }
+  console.log(`[seed] Created ${menuItemsCreated} missing menu items (existing items preserved).`);
+
+  // 5. SAFE TABLES SEED (Create missing tables only, preserve existing status/orders)
+  console.log("[seed] Checking tables...");
+  let tablesCreated = 0;
+  for (let i = 1; i <= 20; i += 1) {
+    const existingTable = await Table.findOne({ number: i });
+    if (existingTable) {
+      // Preserve existing table status, order references, zone, capacity
+      continue;
+    }
+
+    const zone = i <= 10 ? "Main Hall" : i <= 16 ? "Garden" : "Terrace";
+    await Table.create({ number: i, zone, capacity: 4, status: "AVAILABLE" });
+    tablesCreated += 1;
+  }
+  console.log(`[seed] Created ${tablesCreated} missing tables (existing tables preserved).`);
+
+  console.log("\n[seed] Non-destructive seeding finished successfully.");
+  console.log("[seed] Existing production data and credentials were fully preserved.");
+  console.log(`  OWNER    ${env.OWNER_EMAIL} / [PROTECTED] (configured via environment)`);
+  console.log("  MANAGER  manager@example.com / manager123 (if demo user was created)");
+  console.log("  CASHIER  cashier@example.com / cashier123 (if demo user was created)");
+  console.log("  KITCHEN  kitchen@example.com / kitchen123 (if demo user was created)");
 
   await mongoose.disconnect();
   process.exit(0);

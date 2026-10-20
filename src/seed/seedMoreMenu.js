@@ -213,10 +213,20 @@ const DUMMY_MENU = [
 ];
 
 async function seedMoreMenu() {
-  await connectDB();
-  console.log("[seedMoreMenu] Seeding dummy menu items...");
+  // Safety Guard: Prevent running in production unless explicitly opted in via ALLOW_SAFE_SEED
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_SAFE_SEED !== "true") {
+    console.warn("\n====================================================================");
+    console.warn("[seedMoreMenu] WARNING: Blocked in production (NODE_ENV=production)");
+    console.warn("[seedMoreMenu] to safeguard live restaurant data.");
+    console.warn("[seedMoreMenu] Set ALLOW_SAFE_SEED=true to explicitly allow non-destructive seeding.");
+    console.warn("====================================================================\n");
+    process.exit(0);
+  }
 
-  // Ensure categories exist
+  await connectDB();
+  console.log("[seedMoreMenu] Seeding missing menu items safely (non-destructive)...");
+
+  // Ensure categories exist without overwriting
   const categoryNames = [
     "Starters",
     "Main Course",
@@ -231,7 +241,7 @@ async function seedMoreMenu() {
     const name = categoryNames[i];
     await Category.findOneAndUpdate(
       { name },
-      { name, sortOrder: i },
+      { $setOnInsert: { name, sortOrder: i, isActive: true } },
       { upsert: true, new: true }
     );
   }
@@ -244,25 +254,30 @@ async function seedMoreMenu() {
     const catId = catMap[item.categoryName];
     if (!catId) continue;
 
-    await MenuItem.findOneAndUpdate(
+    // Use $setOnInsert so existing item prices, descriptions, or modifications are never overwritten
+    const result = await MenuItem.findOneAndUpdate(
       { name: item.name },
       {
-        name: item.name,
-        category: catId,
-        price: item.price,
-        taxPercent: 5,
-        foodType: item.foodType,
-        description: item.description,
-        image: item.image,
-        isAvailable: true,
-        isActive: true,
+        $setOnInsert: {
+          name: item.name,
+          category: catId,
+          price: item.price,
+          taxPercent: 5,
+          foodType: item.foodType,
+          description: item.description,
+          image: item.image,
+          isAvailable: true,
+          isActive: true,
+        },
       },
-      { upsert: true, new: true }
+      { upsert: true, new: false }
     );
-    added++;
+    if (!result) {
+      added++;
+    }
   }
 
-  console.log(`[seedMoreMenu] Successfully seeded ${added} dummy menu items!`);
+  console.log(`[seedMoreMenu] Successfully added ${added} missing menu items (existing items were preserved)!`);
   await mongoose.disconnect();
   process.exit(0);
 }
