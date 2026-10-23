@@ -26,6 +26,7 @@ const kotSchema = new mongoose.Schema(
   {
     kotNumber: { type: String, required: true, unique: true },
     order: { type: mongoose.Schema.Types.ObjectId, ref: "Order", required: true },
+    counter: { type: String, default: "Counter 1", trim: true },
     table: { type: mongoose.Schema.Types.ObjectId, ref: "Table", default: null },
     orderType: { type: String, required: true },
     items: { type: [kotItemSchema], default: [] },

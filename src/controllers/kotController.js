@@ -26,7 +26,7 @@ async function list(req, res) {
     .populate("createdBy", "name role email phone")
     .populate({
       path: "order",
-      select: "orderNumber orderType orderStatus notes customer createdBy paymentStatus paymentMethod",
+      select: "orderNumber orderType orderStatus counter notes customer createdBy paymentStatus paymentMethod",
       populate: { path: "createdBy customer", select: "name role phone" }
     })
     .sort({ createdAt: 1 });
@@ -55,6 +55,7 @@ async function send(req, res) {
     order: order._id,
     table: order.table,
     orderType: order.orderType,
+    counter: order.counter || "Counter 1",
     items: selectedItems.map((i) => ({ menuItem: i.menuItem, name: i.name, quantity: i.quantity, notes: i.notes })),
     createdBy: req.user._id,
     status: "SENT",
@@ -70,7 +71,7 @@ async function send(req, res) {
     { path: "createdBy", select: "name role email phone" },
     {
       path: "order",
-      select: "orderNumber orderType orderStatus notes customer createdBy paymentStatus paymentMethod",
+      select: "orderNumber orderType orderStatus counter notes customer createdBy paymentStatus paymentMethod",
       populate: { path: "createdBy customer", select: "name role phone" },
     },
   ]);

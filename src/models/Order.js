@@ -31,6 +31,7 @@ const orderSchema = new mongoose.Schema(
   {
     orderNumber: { type: String, required: true, unique: true },
     orderType: { type: String, enum: ORDER_TYPES, required: true },
+    counter: { type: String, default: "Counter 1", trim: true },
     table: { type: mongoose.Schema.Types.ObjectId, ref: "Table", default: null },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: "Customer", default: null },
     items: { type: [orderItemSchema], default: [] },

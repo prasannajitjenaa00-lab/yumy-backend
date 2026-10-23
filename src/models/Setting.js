@@ -13,6 +13,7 @@ const settingSchema = new mongoose.Schema(
     igstPercent: { type: Number, default: 0 },
     serviceChargePercent: { type: Number, default: 0 },
     tableCount: { type: Number, default: 20 },
+    counters: { type: [String], default: ["Counter 1", "Counter 2"] },
     printerConfig: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true }

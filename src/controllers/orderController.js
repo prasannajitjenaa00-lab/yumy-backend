@@ -83,7 +83,7 @@ async function getOne(req, res) {
 }
 
 async function create(req, res) {
-  const { orderType = "DINE_IN", table, customer, items = [], notes, discount = 0, taxRate, paymentMethod } = req.body;
+  const { orderType = "DINE_IN", counter = "Counter 1", table, customer, items = [], notes, discount = 0, taxRate, paymentMethod } = req.body;
 
   let resolvedTable = null;
   if (table) {
@@ -144,6 +144,7 @@ async function create(req, res) {
       order = await Order.create({
         orderNumber,
         orderType,
+        counter: counter || "Counter 1",
         table: resolvedTable ? resolvedTable._id : null,
         customer: resolvedCustomer ? resolvedCustomer._id : null,
         items: orderItems,
