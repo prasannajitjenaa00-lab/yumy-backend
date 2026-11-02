@@ -33,6 +33,7 @@ app.use("/api/inventory", require("./routes/inventoryRoutes"));
 app.use("/api/purchases", require("./routes/purchaseRoutes"));
 app.use("/api/suppliers", require("./routes/supplierRoutes"));
 app.use("/api/expenses", require("./routes/expenseRoutes"));
+app.use("/api/petty-cash", require("./routes/pettyCashRoutes"));
 app.use("/api/staff", require("./routes/staffRoutes"));
 app.use("/api/staff-shifts", require("./routes/staffShiftRoutes"));
 app.use("/api/attendance", require("./routes/attendanceRoutes"));

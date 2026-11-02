@@ -10,6 +10,8 @@ const cashierShiftSchema = new mongoose.Schema(
     cardSales: { type: Number, default: 0 },
     otherSales: { type: Number, default: 0 },
     expenses: { type: Number, default: 0 },
+    pettyCashIn: { type: Number, default: 0 },
+    pettyCashOut: { type: Number, default: 0 },
     refunds: { type: Number, default: 0 },
     expectedCash: { type: Number },
     actualCash: { type: Number },

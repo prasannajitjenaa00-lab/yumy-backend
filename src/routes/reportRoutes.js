@@ -8,6 +8,7 @@ router.get("/dashboard", ctrl.dashboard);
 router.get("/sales", ctrl.salesReport);
 router.get("/orders", ctrl.orderReport);
 router.get("/payments", ctrl.paymentReport);
+router.get("/petty-cash", ctrl.pettyCashReport);
 router.get("/inventory", ctrl.inventoryReport);
 router.get("/products", ctrl.productReport);
 router.get("/gst", ctrl.gstReport);

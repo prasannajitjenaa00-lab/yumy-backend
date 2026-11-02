@@ -1,6 +1,7 @@
 const CashierShift = require("../models/CashierShift");
 const Payment = require("../models/Payment");
 const Expense = require("../models/Expense");
+const PettyCash = require("../models/PettyCash");
 const { round2 } = require("../utils/calculations");
 
 async function openShift(req, res) {
@@ -17,6 +18,14 @@ async function closeShift(req, res) {
   const payments = await Payment.find({ receivedBy: shift.cashier, createdAt: { $gte: shift.openingTime }, isRefund: false });
   const refunds = await Payment.find({ receivedBy: shift.cashier, createdAt: { $gte: shift.openingTime }, isRefund: true });
   const expenses = await Expense.find({ addedBy: shift.cashier, createdAt: { $gte: shift.openingTime } });
+  const pettyTransactions = await PettyCash.find({
+    $or: [
+      { shift: shift._id },
+      { paidBy: shift.cashier, createdAt: { $gte: shift.openingTime } },
+    ],
+  });
+  const pettyIn = pettyTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0);
+  const pettyOut = pettyTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0);
 
   shift.cashSales = round2(payments.filter((p) => p.method === "CASH").reduce((s, p) => s + p.amount, 0));
   shift.upiSales = round2(payments.filter((p) => p.method === "UPI").reduce((s, p) => s + p.amount, 0));
@@ -24,7 +33,9 @@ async function closeShift(req, res) {
   shift.otherSales = round2(payments.filter((p) => p.method === "OTHER").reduce((s, p) => s + p.amount, 0));
   shift.refunds = round2(refunds.reduce((s, p) => s + p.amount, 0));
   shift.expenses = round2(expenses.reduce((s, e) => s + e.amount, 0));
-  shift.expectedCash = round2(shift.openingCash + shift.cashSales - shift.expenses);
+  shift.pettyCashIn = round2(pettyIn);
+  shift.pettyCashOut = round2(pettyOut);
+  shift.expectedCash = round2(shift.openingCash + shift.cashSales + shift.pettyCashIn - shift.expenses - shift.pettyCashOut);
   shift.actualCash = req.body.actualCash;
   shift.difference = round2(shift.actualCash - shift.expectedCash);
   shift.closingTime = new Date();

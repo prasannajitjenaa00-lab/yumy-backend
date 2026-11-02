@@ -1,6 +1,7 @@
 const Order = require("../models/Order");
 const Payment = require("../models/Payment");
 const Expense = require("../models/Expense");
+const PettyCash = require("../models/PettyCash");
 const InventoryItem = require("../models/InventoryItem");
 const StockTransaction = require("../models/StockTransaction");
 const { startOfDay, endOfDay } = require("../utils/dateUtils");
@@ -41,10 +42,102 @@ async function orderReport(req, res) {
 
 async function paymentReport(req, res) {
   const { start, end } = dateRange(req);
-  const payments = await Payment.find({ createdAt: { $gte: start, $lte: end }, isRefund: false });
-  const byMethod = { CASH: 0, UPI: 0, CARD: 0, OTHER: 0 };
-  payments.forEach((p) => { byMethod[p.method] = round2((byMethod[p.method] || 0) + p.amount); });
-  res.json({ success: true, message: "OK", data: byMethod });
+  const payments = await Payment.find({ createdAt: { $gte: start, $lte: end }, isRefund: false })
+    .populate("order", "orderNumber orderType grandTotal")
+    .populate("receivedBy", "name")
+    .sort({ createdAt: -1 });
+
+  const summary = {
+    CASH: { amount: 0, count: 0, percentage: 0 },
+    UPI: { amount: 0, count: 0, percentage: 0 },
+    CARD: { amount: 0, count: 0, percentage: 0 },
+    OTHER: { amount: 0, count: 0, percentage: 0 },
+  };
+
+  let totalCollected = 0;
+  payments.forEach((p) => {
+    const method = summary[p.method] ? p.method : "OTHER";
+    summary[method].amount = round2(summary[method].amount + p.amount);
+    summary[method].count += 1;
+    totalCollected = round2(totalCollected + p.amount);
+  });
+
+  Object.keys(summary).forEach((k) => {
+    summary[k].percentage = totalCollected > 0 ? round2((summary[k].amount / totalCollected) * 100) : 0;
+  });
+
+  // Petty Cash transactions for drawer reconciliation
+  const pettyTransactions = await PettyCash.find({ createdAt: { $gte: start, $lte: end } });
+  const totalPettyIn = round2(pettyTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
+  const totalPettyOut = round2(pettyTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
+  const netPetty = round2(totalPettyIn - totalPettyOut);
+
+  const cashSales = summary.CASH.amount;
+  const netDrawerCash = round2(cashSales + netPetty);
+
+  res.json({
+    success: true,
+    message: "OK",
+    data: {
+      // Direct keys for backward compatibility
+      CASH: summary.CASH.amount,
+      UPI: summary.UPI.amount,
+      CARD: summary.CARD.amount,
+      OTHER: summary.OTHER.amount,
+      totalCollected,
+      totalCount: payments.length,
+      summary,
+      pettyCash: {
+        totalCashIn: totalPettyIn,
+        totalCashOut: totalPettyOut,
+        net: netPetty,
+        cashSales,
+        netDrawerCash,
+      },
+      transactions: payments.slice(0, 100).map((p) => ({
+        id: p._id,
+        orderId: p.order?._id,
+        orderNumber: p.order?.orderNumber || "N/A",
+        orderType: p.order?.orderType || "DINE_IN",
+        amount: p.amount,
+        method: p.method,
+        transactionRef: p.transactionRef || "",
+        cashier: p.receivedBy?.name || "Staff",
+        paidAt: p.paidAt || p.createdAt,
+      })),
+    },
+  });
+}
+
+async function pettyCashReport(req, res) {
+  const { start, end } = dateRange(req);
+  const transactions = await PettyCash.find({ createdAt: { $gte: start, $lte: end } })
+    .populate("paidBy", "name email role")
+    .sort({ createdAt: -1 });
+
+  const totalCashIn = round2(transactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
+  const totalCashOut = round2(transactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
+  const netBalance = round2(totalCashIn - totalCashOut);
+
+  const byCategory = {};
+  transactions
+    .filter((t) => t.type === "CASH_OUT")
+    .forEach((t) => {
+      byCategory[t.category] = round2((byCategory[t.category] || 0) + t.amount);
+    });
+
+  res.json({
+    success: true,
+    message: "OK",
+    data: {
+      totalCashIn,
+      totalCashOut,
+      netBalance,
+      totalTransactions: transactions.length,
+      byCategory,
+      transactions,
+    },
+  });
 }
 
 async function inventoryReport(req, res) {
@@ -129,4 +222,4 @@ async function dashboard(req, res) {
   });
 }
 
-module.exports = { salesReport, orderReport, paymentReport, inventoryReport, productReport, gstReport, dashboard };
+module.exports = { salesReport, orderReport, paymentReport, pettyCashReport, inventoryReport, productReport, gstReport, dashboard };
