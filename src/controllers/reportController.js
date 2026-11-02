@@ -19,12 +19,88 @@ async function salesReport(req, res) {
   const orders = await Order.find({ createdAt: { $gte: start, $lte: end }, orderStatus: { $ne: "CANCELLED" } });
   const totalSales = round2(orders.reduce((s, o) => s + o.grandTotal, 0));
   const totalOrders = orders.length;
+
+  // 1. By Day: Pre-fill all dates in selected dateRange
   const byDay = {};
+  const cur = new Date(start);
+  while (cur <= end) {
+    const key = cur.toISOString().slice(0, 10);
+    byDay[key] = 0;
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  // 2. By Hour: For today / single day view
+  const byHour = {};
+  for (let h = 8; h <= 23; h++) {
+    const hourLabel = `${String(h).padStart(2, "0")}:00`;
+    byHour[hourLabel] = 0;
+  }
+
   orders.forEach((o) => {
     const key = o.createdAt.toISOString().slice(0, 10);
     byDay[key] = round2((byDay[key] || 0) + o.grandTotal);
+
+    const h = o.createdAt.getHours();
+    const hourLabel = `${String(h).padStart(2, "0")}:00`;
+    if (byHour[hourLabel] !== undefined) {
+      byHour[hourLabel] = round2(byHour[hourLabel] + o.grandTotal);
+    }
   });
-  res.json({ success: true, message: "OK", data: { totalSales, totalOrders, byDay } });
+
+  // 3. Always include Last 7 Days continuous trend
+  const past7Days = {};
+  const d7 = new Date();
+  d7.setDate(d7.getDate() - 6);
+  const start7 = startOfDay(d7);
+  const end7 = endOfDay(new Date());
+
+  const orders7 = await Order.find({ createdAt: { $gte: start7, $lte: end7 }, orderStatus: { $ne: "CANCELLED" } });
+  const c7 = new Date(start7);
+  while (c7 <= end7) {
+    const key = c7.toISOString().slice(0, 10);
+    past7Days[key] = 0;
+    c7.setDate(c7.getDate() + 1);
+  }
+  orders7.forEach((o) => {
+    const key = o.createdAt.toISOString().slice(0, 10);
+    if (past7Days[key] !== undefined) {
+      past7Days[key] = round2(past7Days[key] + o.grandTotal);
+    }
+  });
+
+  // 4. Always include Last 30 Days continuous trend
+  const past30Days = {};
+  const d30 = new Date();
+  d30.setDate(d30.getDate() - 29);
+  const start30 = startOfDay(d30);
+  const end30 = endOfDay(new Date());
+
+  const orders30 = await Order.find({ createdAt: { $gte: start30, $lte: end30 }, orderStatus: { $ne: "CANCELLED" } });
+  const c30 = new Date(start30);
+  while (c30 <= end30) {
+    const key = c30.toISOString().slice(0, 10);
+    past30Days[key] = 0;
+    c30.setDate(c30.getDate() + 1);
+  }
+  orders30.forEach((o) => {
+    const key = o.createdAt.toISOString().slice(0, 10);
+    if (past30Days[key] !== undefined) {
+      past30Days[key] = round2(past30Days[key] + o.grandTotal);
+    }
+  });
+
+  res.json({
+    success: true,
+    message: "OK",
+    data: {
+      totalSales,
+      totalOrders,
+      byDay,
+      byHour,
+      past7Days,
+      past30Days,
+    },
+  });
 }
 
 async function orderReport(req, res) {
@@ -112,18 +188,25 @@ async function paymentReport(req, res) {
 async function pettyCashReport(req, res) {
   const { start, end } = dateRange(req);
   const allPastTx = await PettyCash.find({ createdAt: { $lt: start } });
-  const openingBalance = round2(
-    allPastTx.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0) -
-    allPastTx.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0)
-  );
+  const allPastPayments = await Payment.find({ createdAt: { $lt: start }, method: "CASH" });
+
+  const pastCashSales = allPastPayments.filter((p) => !p.isRefund).reduce((s, p) => s + p.amount, 0);
+  const pastCashRefunds = allPastPayments.filter((p) => p.isRefund).reduce((s, p) => s + p.amount, 0);
+  const pastPettyIn = allPastTx.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0);
+  const pastPettyOut = allPastTx.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0);
+
+  const openingBalance = round2(pastCashSales + pastPettyIn - pastCashRefunds - pastPettyOut);
 
   const transactions = await PettyCash.find({ createdAt: { $gte: start, $lte: end } })
     .populate("paidBy", "name email role")
     .sort({ createdAt: 1 });
+  const periodPayments = await Payment.find({ createdAt: { $gte: start, $lte: end }, method: "CASH" })
+    .populate("receivedBy", "name email role");
 
-  const totalCashIn = round2(transactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
-  const totalCashOut = round2(transactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
-  const closingBalance = round2(openingBalance + totalCashIn - totalCashOut);
+  const totalCashSales = round2(periodPayments.filter((p) => !p.isRefund).reduce((s, p) => s + p.amount, 0));
+  const totalPettyIn = round2(transactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
+  const totalPettyOut = round2(transactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
+  const closingBalance = round2(openingBalance + totalCashSales + totalPettyIn - totalPettyOut);
 
   const byCategory = {};
   transactions
@@ -132,13 +215,20 @@ async function pettyCashReport(req, res) {
       byCategory[t.category] = round2((byCategory[t.category] || 0) + t.amount);
     });
 
-  // Daily carry-forward ledger calculation
+  // Daily carry-forward ledger calculation (combining cash sales + petty cash in/out)
   const dayGroups = {};
+
+  periodPayments
+    .filter((p) => !p.isRefund)
+    .forEach((p) => {
+      const dayKey = p.createdAt.toISOString().slice(0, 10);
+      if (!dayGroups[dayKey]) dayGroups[dayKey] = { date: dayKey, in: 0, out: 0, count: 0 };
+      dayGroups[dayKey].in = round2(dayGroups[dayKey].in + p.amount);
+    });
+
   transactions.forEach((tx) => {
     const dayKey = tx.createdAt.toISOString().slice(0, 10);
-    if (!dayGroups[dayKey]) {
-      dayGroups[dayKey] = { date: dayKey, in: 0, out: 0, count: 0 };
-    }
+    if (!dayGroups[dayKey]) dayGroups[dayKey] = { date: dayKey, in: 0, out: 0, count: 0 };
     if (tx.type === "CASH_IN") dayGroups[dayKey].in = round2(dayGroups[dayKey].in + tx.amount);
     if (tx.type === "CASH_OUT") dayGroups[dayKey].out = round2(dayGroups[dayKey].out + tx.amount);
     dayGroups[dayKey].count += 1;
@@ -161,16 +251,91 @@ async function pettyCashReport(req, res) {
     };
   });
 
+  const User = require("../models/User");
+  const systemUsers = await User.find({ role: { $in: ["OWNER", "MANAGER", "CASHIER"] }, isActive: true }).select("name role email");
+  const cashiers = systemUsers.map((u) => ({ id: u._id.toString(), name: u.name, role: u.role }));
+
+  // Multi-cashier automatic attribution & settlement map
+  const cashierSettlementMap = {};
+
+  systemUsers.forEach((u) => {
+    cashierSettlementMap[u._id.toString()] = {
+      id: u._id.toString(),
+      name: u.name,
+      role: u.role,
+      counter: "Counter 1",
+      ordersBilled: 0,
+      cashBilled: 0,
+      pettyIn: 0,
+      pettyOut: 0,
+      expectedHandover: 0,
+    };
+  });
+
+  periodPayments
+    .filter((p) => !p.isRefund)
+    .forEach((p) => {
+      const u = p.receivedBy;
+      const uId = u?._id ? u._id.toString() : (u ? u.toString() : "unknown");
+      if (!cashierSettlementMap[uId]) {
+        cashierSettlementMap[uId] = {
+          id: uId,
+          name: u?.name || "Staff",
+          role: u?.role || "STAFF",
+          counter: "Counter 1",
+          ordersBilled: 0,
+          cashBilled: 0,
+          pettyIn: 0,
+          pettyOut: 0,
+          expectedHandover: 0,
+        };
+      }
+      cashierSettlementMap[uId].ordersBilled += 1;
+      cashierSettlementMap[uId].cashBilled = round2(cashierSettlementMap[uId].cashBilled + p.amount);
+    });
+
+  transactions.forEach((tx) => {
+    const u = tx.paidBy;
+    const uId = u?._id ? u._id.toString() : (u ? u.toString() : "unknown");
+    if (!cashierSettlementMap[uId]) {
+      cashierSettlementMap[uId] = {
+        id: uId,
+        name: u?.name || "Staff",
+        role: u?.role || "STAFF",
+        counter: tx.counterId || "Counter 1",
+        ordersBilled: 0,
+        cashBilled: 0,
+        pettyIn: 0,
+        pettyOut: 0,
+        expectedHandover: 0,
+      };
+    }
+    if (tx.counterId) cashierSettlementMap[uId].counter = tx.counterId;
+    if (tx.type === "CASH_IN") cashierSettlementMap[uId].pettyIn = round2(cashierSettlementMap[uId].pettyIn + tx.amount);
+    if (tx.type === "CASH_OUT") cashierSettlementMap[uId].pettyOut = round2(cashierSettlementMap[uId].pettyOut + tx.amount);
+  });
+
+  Object.values(cashierSettlementMap).forEach((c) => {
+    c.expectedHandover = round2(c.cashBilled + c.pettyIn - c.pettyOut);
+  });
+
+  const cashierSettlements = Object.values(cashierSettlementMap).filter(
+    (c) => c.ordersBilled > 0 || c.pettyIn > 0 || c.pettyOut > 0 || c.role === "CASHIER"
+  );
+
   res.json({
     success: true,
     message: "OK",
     data: {
       openingBalance, // Starting balance before period
-      totalCashIn,
-      totalCashOut,
-      netBalance: closingBalance, // Ending balance after period
+      todayCashSales: totalCashSales,
+      totalCashIn: totalPettyIn,
+      totalCashOut: totalPettyOut,
+      netBalance: closingBalance, // Ending drawer cash after period
       totalTransactions: transactions.length,
       byCategory,
+      cashiers,
+      cashierSettlements,
       dailyLedger: dailyLedger.reverse(),
       transactions: transactions.reverse(),
     },

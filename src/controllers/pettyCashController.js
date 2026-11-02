@@ -1,14 +1,20 @@
 const PettyCash = require("../models/PettyCash");
 const CashierShift = require("../models/CashierShift");
+const Payment = require("../models/Payment");
 const { recordAudit } = require("../middleware/auditMiddleware");
 const { round2 } = require("../utils/calculations");
 const { startOfDay, endOfDay } = require("../utils/dateUtils");
 
 async function getCurrentBalance() {
   const transactions = await PettyCash.find().select("type amount");
-  const totalIn = transactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0);
-  const totalOut = transactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0);
-  return round2(totalIn - totalOut);
+  const totalPettyIn = transactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0);
+  const totalPettyOut = transactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0);
+
+  const payments = await Payment.find().select("amount method isRefund");
+  const cashSales = payments.filter((p) => p.method === "CASH" && !p.isRefund).reduce((s, p) => s + p.amount, 0);
+  const cashRefunds = payments.filter((p) => p.method === "CASH" && p.isRefund).reduce((s, p) => s + p.amount, 0);
+
+  return round2(cashSales + totalPettyIn - cashRefunds - totalPettyOut);
 }
 
 // 1. Record Cash In (Top up float / add cash to drawer)
@@ -104,10 +110,15 @@ async function recordCashOut(req, res) {
 // 3. List Transactions
 async function list(req, res) {
   try {
-    const { from, to, type, category, counterId, limit = 100 } = req.query;
+    const { from, to, date, type, category, counterId, cashier, limit = 200 } = req.query;
     const filter = {};
 
-    if (from || to) {
+    if (date) {
+      filter.createdAt = {
+        $gte: startOfDay(new Date(date)),
+        $lte: endOfDay(new Date(date)),
+      };
+    } else if (from || to) {
       filter.createdAt = {};
       if (from) filter.createdAt.$gte = startOfDay(new Date(from));
       if (to) filter.createdAt.$lte = endOfDay(new Date(to));
@@ -121,6 +132,9 @@ async function list(req, res) {
     if (counterId && counterId !== "ALL") {
       filter.counterId = counterId;
     }
+    if (cashier && cashier !== "ALL") {
+      filter.paidBy = cashier;
+    }
 
     const transactions = await PettyCash.find(filter)
       .populate("paidBy", "name email role")
@@ -133,31 +147,56 @@ async function list(req, res) {
   }
 }
 
-// 4. Summary & Drawer Status with Carry-Forward Rollover
+// 4. Summary & Drawer Status with Carry-Forward Rollover (Includes POS Cash Sales)
 async function getSummary(req, res) {
   try {
-    const todayStart = startOfDay(new Date());
-    const todayEnd = endOfDay(new Date());
+    const targetDate = req.query.date ? new Date(req.query.date) : (req.query.from ? new Date(req.query.from) : new Date());
+    const dayStart = startOfDay(targetDate);
+    const dayEnd = endOfDay(targetDate);
 
-    const allTransactions = await PettyCash.find().sort({ createdAt: 1 });
-    const pastTransactions = allTransactions.filter((t) => t.createdAt < todayStart);
+    const allTransactions = await PettyCash.find().populate("paidBy", "name email role").sort({ createdAt: 1 });
+    const allPayments = await Payment.find().sort({ createdAt: 1 });
+
+    // Past records (strictly before target date 00:00:00)
+    const pastTransactions = allTransactions.filter((t) => t.createdAt < dayStart);
+    const pastPayments = allPayments.filter((p) => p.createdAt < dayStart);
+
+    const pastPettyIn = pastTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0);
+    const pastPettyOut = pastTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0);
+    const pastCashSales = pastPayments.filter((p) => p.method === "CASH" && !p.isRefund).reduce((s, p) => s + p.amount, 0);
+    const pastCashRefunds = pastPayments.filter((p) => p.method === "CASH" && p.isRefund).reduce((s, p) => s + p.amount, 0);
+
+    // Opening Balance for target date = Yesterday's Closing Balance
+    const openingBalance = round2(pastCashSales + pastPettyIn - pastCashRefunds - pastPettyOut);
+
+    // Selected date records
     const todayTransactions = allTransactions.filter(
-      (t) => t.createdAt >= todayStart && t.createdAt <= todayEnd
+      (t) => t.createdAt >= dayStart && t.createdAt <= dayEnd
+    );
+    const todayPayments = allPayments.filter(
+      (p) => p.createdAt >= dayStart && p.createdAt <= dayEnd
     );
 
-    // Opening Balance for Today = Yesterday's Closing Balance (Total Net Cash before today)
-    const pastIn = pastTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0);
-    const pastOut = pastTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0);
-    const openingBalance = round2(pastIn - pastOut);
+    const todayCashSales = round2(todayPayments.filter((p) => p.method === "CASH" && !p.isRefund).reduce((s, p) => s + p.amount, 0));
+    const todayPettyIn = round2(todayTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
+    const todayPettyOut = round2(todayTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
 
-    const todayIn = round2(todayTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
-    const todayOut = round2(todayTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
-    const currentBalance = round2(openingBalance + todayIn - todayOut);
+    // Cash In combines order cash collections + float deposits
+    const totalCashIn = round2(todayPettyIn + todayCashSales);
+    const totalCashOut = todayPettyOut;
 
-    const totalIn = round2(allTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
-    const totalOut = round2(allTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
+    // Current / Closing Balance for selected date
+    const currentBalance = round2(openingBalance + totalCashIn - totalCashOut);
+    const closingBalance = currentBalance;
 
-    // Category breakdown for cash out
+    const totalMovement = round2(totalCashIn + totalCashOut);
+    const cashInPct = totalMovement > 0 ? Math.round((totalCashIn / totalMovement) * 100) : 0;
+    const cashOutPct = totalMovement > 0 ? (100 - cashInPct) : 0;
+
+    const totalPettyIn = round2(allTransactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
+    const totalPettyOut = round2(allTransactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
+
+    // Category breakdown for petty cash out
     const categoryBreakdown = {};
     allTransactions
       .filter((t) => t.type === "CASH_OUT")
@@ -165,22 +204,42 @@ async function getSummary(req, res) {
         categoryBreakdown[t.category] = round2((categoryBreakdown[t.category] || 0) + t.amount);
       });
 
-    // Build Daily Carry-Forward Ledger: Yesterday Close = Tomorrow Open
+    // Extract all distinct cashiers from transactions
+    const cashiersMap = new Map();
+    allTransactions.forEach((t) => {
+      if (t.paidBy && t.paidBy._id) {
+        cashiersMap.set(t.paidBy._id.toString(), {
+          id: t.paidBy._id,
+          name: t.paidBy.name,
+          role: t.paidBy.role,
+        });
+      }
+    });
+    const cashiers = Array.from(cashiersMap.values());
+
+    // Build Daily Carry-Forward Ledger (Combining Cash Sales + Petty In - Petty Out)
     const dayGroups = {};
+
+    allPayments
+      .filter((p) => p.method === "CASH" && !p.isRefund)
+      .forEach((p) => {
+        const dayKey = p.createdAt.toISOString().slice(0, 10);
+        if (!dayGroups[dayKey]) dayGroups[dayKey] = { date: dayKey, in: 0, out: 0, count: 0 };
+        dayGroups[dayKey].in = round2(dayGroups[dayKey].in + p.amount);
+      });
+
     allTransactions.forEach((tx) => {
       const dayKey = tx.createdAt.toISOString().slice(0, 10);
-      if (!dayGroups[dayKey]) {
-        dayGroups[dayKey] = { date: dayKey, in: 0, out: 0, count: 0 };
-      }
+      if (!dayGroups[dayKey]) dayGroups[dayKey] = { date: dayKey, in: 0, out: 0, count: 0 };
       if (tx.type === "CASH_IN") dayGroups[dayKey].in = round2(dayGroups[dayKey].in + tx.amount);
       if (tx.type === "CASH_OUT") dayGroups[dayKey].out = round2(dayGroups[dayKey].out + tx.amount);
       dayGroups[dayKey].count += 1;
     });
 
-    // Ensure today is always present in dayGroups even if no transactions yet
-    const todayKey = new Date().toISOString().slice(0, 10);
-    if (!dayGroups[todayKey]) {
-      dayGroups[todayKey] = { date: todayKey, in: 0, out: 0, count: 0 };
+    // Ensure selected date is in ledger
+    const targetKey = targetDate.toISOString().slice(0, 10);
+    if (!dayGroups[targetKey]) {
+      dayGroups[targetKey] = { date: targetKey, in: 0, out: 0, count: 0 };
     }
 
     const sortedDays = Object.keys(dayGroups).sort();
@@ -204,15 +263,23 @@ async function getSummary(req, res) {
       success: true,
       message: "OK",
       data: {
-        openingBalance, // Today's opening = yesterday's close
+        openingBalance, // Starting balance before selected date
+        cashIn: totalCashIn, // Total Cash In (Petty Float + Cash Sales)
+        cashOut: totalCashOut, // Total Cash Out (Petty Expenses)
+        closingBalance, // Closing balance for selected date
+        totalMovement,
+        cashInPct,
+        cashOutPct,
+        todayCashSales,
+        todayIn: todayPettyIn,
+        todayOut: todayPettyOut,
         currentBalance,
-        todayIn,
-        todayOut,
         todayCount: todayTransactions.length,
-        totalIn,
-        totalOut,
+        totalIn: totalPettyIn,
+        totalOut: totalPettyOut,
         categoryBreakdown,
-        dailyLedger: dailyLedger.reverse().slice(0, 15), // Newest first
+        cashiers,
+        dailyLedger: dailyLedger.reverse().slice(0, 30),
       },
     });
   } catch (err) {

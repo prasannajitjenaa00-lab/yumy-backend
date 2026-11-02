@@ -5,7 +5,7 @@ const MenuItem = require("../models/MenuItem");
 const InventoryItem = require("../models/InventoryItem");
 const StockTransaction = require("../models/StockTransaction");
 const generateOrderNumber = require("../utils/generateOrderNumber");
-const { calculateOrderTotals } = require("../utils/calculations");
+const { calculateOrderTotals, round2 } = require("../utils/calculations");
 const { recordAudit } = require("../middleware/auditMiddleware");
 
 async function deductInventoryForOrder(order, userId) {
@@ -83,7 +83,7 @@ async function getOne(req, res) {
 }
 
 async function create(req, res) {
-  const { orderType = "DINE_IN", counter = "Counter 1", table, customer, items = [], notes, discount = 0, taxRate, paymentMethod } = req.body;
+  const { orderType = "DINE_IN", counter = "Counter 1", table, customer, items = [], notes, discount = 0, taxRate, paymentMethod, splitPayments } = req.body;
 
   let resolvedTable = null;
   if (table) {
@@ -131,7 +131,23 @@ async function create(req, res) {
     }
   }
 
-  const isPaidAtCounter = Boolean(paymentMethod);
+  const validSplits = Array.isArray(splitPayments) && splitPayments.length > 0
+    ? splitPayments
+        .map((sp) => ({ method: sp.method || "CASH", amount: round2(Number(sp.amount) || 0) }))
+        .filter((sp) => sp.amount > 0)
+    : [];
+  const hasSplit = validSplits.length > 0;
+  const totalSplit = hasSplit ? round2(validSplits.reduce((s, sp) => s + sp.amount, 0)) : 0;
+  const isPaidAtCounter = hasSplit ? totalSplit >= totals.grandTotal : Boolean(paymentMethod);
+
+  let orderPaymentMethod = null;
+  if (hasSplit) {
+    orderPaymentMethod = validSplits.length === 1
+      ? validSplits[0].method
+      : `SPLIT (${validSplits.map((s) => `${s.method}: ₹${s.amount}`).join(", ")})`;
+  } else if (isPaidAtCounter) {
+    orderPaymentMethod = paymentMethod;
+  }
 
   // Robust unique order creation with automatic retry on collision
   let order = null;
@@ -152,8 +168,8 @@ async function create(req, res) {
         discount,
         ...totals,
         orderStatus: "DRAFT",
-        paymentStatus: isPaidAtCounter ? "PAID" : "UNPAID",
-        paymentMethod: isPaidAtCounter ? paymentMethod : null,
+        paymentStatus: isPaidAtCounter ? "PAID" : totalSplit > 0 ? "PARTIALLY_PAID" : "UNPAID",
+        paymentMethod: orderPaymentMethod,
         billStatus: isPaidAtCounter ? "PAID" : "NOT_REQUESTED",
         createdBy: req.user._id,
       });
@@ -166,7 +182,21 @@ async function create(req, res) {
     }
   }
 
-  if (isPaidAtCounter) {
+  if (hasSplit) {
+    try {
+      const Payment = require("../models/Payment");
+      for (const sp of validSplits) {
+        await Payment.create({
+          order: order._id,
+          amount: sp.amount,
+          method: ["CASH", "UPI", "CARD"].includes(sp.method) ? sp.method : "OTHER",
+          receivedBy: req.user._id,
+        });
+      }
+    } catch (payErr) {
+      console.warn("Auto split-payment recording error:", payErr.message);
+    }
+  } else if (isPaidAtCounter) {
     try {
       const Payment = require("../models/Payment");
       await Payment.create({

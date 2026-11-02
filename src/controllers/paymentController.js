@@ -19,7 +19,7 @@ async function totalRefunded(orderId) {
 }
 
 async function recordPayment(req, res) {
-  const { orderId, amount, method, transactionRef, cashReceived } = req.body;
+  const { orderId, amount, method, transactionRef, cashReceived, splitPayments } = req.body;
   const order = await Order.findById(orderId);
   if (!order) return res.status(404).json({ success: false, message: "Order not found" });
   if (order.paymentStatus === "PAID") {
@@ -29,30 +29,61 @@ async function recordPayment(req, res) {
     return res.status(400).json({ success: false, message: "Cannot record payment for a cancelled/void order" });
   }
 
-  const changeReturned = method === "CASH" && cashReceived ? round2(Math.max(0, cashReceived - amount)) : undefined;
+  if (Array.isArray(splitPayments) && splitPayments.length > 0) {
+    const validSplits = splitPayments
+      .map((sp) => ({ method: sp.method || "CASH", amount: round2(Number(sp.amount) || 0), transactionRef: sp.transactionRef }))
+      .filter((sp) => sp.amount > 0);
 
-  const payment = await Payment.create({
-    order: order._id,
-    amount,
-    method,
-    transactionRef,
-    cashReceived,
-    changeReturned,
-    receivedBy: req.user._id,
-  });
-
-  const paid = await totalPaid(order._id);
-  const isFullyPaid = paid >= order.grandTotal;
-  order.paymentStatus = isFullyPaid ? "PAID" : paid > 0 ? "PARTIALLY_PAID" : "UNPAID";
-  
-  if (isFullyPaid) {
-    order.billStatus = "PAID";
-    if (order.orderStatus === "SERVED") {
-      order.orderStatus = "COMPLETED";
+    for (const sp of validSplits) {
+      await Payment.create({
+        order: order._id,
+        amount: sp.amount,
+        method: ["CASH", "UPI", "CARD"].includes(sp.method) ? sp.method : "OTHER",
+        transactionRef: sp.transactionRef,
+        receivedBy: req.user._id,
+      });
     }
+
+    const paid = await totalPaid(order._id);
+    const isFullyPaid = paid >= order.grandTotal;
+    order.paymentStatus = isFullyPaid ? "PAID" : paid > 0 ? "PARTIALLY_PAID" : "UNPAID";
+    order.paymentMethod = validSplits.length === 1
+      ? validSplits[0].method
+      : `SPLIT (${validSplits.map((s) => `${s.method}: ₹${s.amount}`).join(", ")})`;
+
+    if (isFullyPaid) {
+      order.billStatus = "PAID";
+      if (order.orderStatus === "SERVED") {
+        order.orderStatus = "COMPLETED";
+      }
+    }
+    await order.save();
+  } else {
+    const changeReturned = method === "CASH" && cashReceived ? round2(Math.max(0, cashReceived - amount)) : undefined;
+
+    const payment = await Payment.create({
+      order: order._id,
+      amount,
+      method,
+      transactionRef,
+      cashReceived,
+      changeReturned,
+      receivedBy: req.user._id,
+    });
+
+    const paid = await totalPaid(order._id);
+    const isFullyPaid = paid >= order.grandTotal;
+    order.paymentStatus = isFullyPaid ? "PAID" : paid > 0 ? "PARTIALLY_PAID" : "UNPAID";
+    if (!order.paymentMethod) order.paymentMethod = method;
+
+    if (isFullyPaid) {
+      order.billStatus = "PAID";
+      if (order.orderStatus === "SERVED") {
+        order.orderStatus = "COMPLETED";
+      }
+    }
+    await order.save();
   }
-  
-  await order.save();
 
   if (isFullyPaid && order.orderStatus === "COMPLETED") {
     if (order.table) {
