@@ -13,7 +13,9 @@ const corsOptions = {
   credentials: true,
 };
 app.use(cors(corsOptions));
-app.use(express.json({ limit: "5mb" }));
+// Captures the raw request body alongside normal JSON parsing, so the WhatsApp
+// webhook handler can verify Meta's X-Hub-Signature-256 header against it.
+app.use(express.json({ limit: "5mb", verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 if (env.NODE_ENV !== "test") app.use(morgan("dev"));
 
@@ -42,6 +44,7 @@ app.use("/api/leaves", require("./routes/leaveRoutes"));
 app.use("/api/reports", require("./routes/reportRoutes"));
 app.use("/api/settings", require("./routes/settingRoutes"));
 app.use("/api/audit-logs", require("./routes/auditRoutes"));
+app.use("/api/webhooks", require("./routes/whatsappRoutes"));
 
 app.use(notFound);
 app.use(errorHandler);

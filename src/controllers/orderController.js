@@ -7,6 +7,7 @@ const StockTransaction = require("../models/StockTransaction");
 const generateOrderNumber = require("../utils/generateOrderNumber");
 const { calculateOrderTotals } = require("../utils/calculations");
 const { recordAudit } = require("../middleware/auditMiddleware");
+const whatsappService = require("../services/whatsappService");
 
 async function deductInventoryForOrder(order, userId) {
   const menuIds = order.items.map((i) => i.menuItem);
@@ -248,6 +249,7 @@ async function updateStatus(req, res) {
     return res.status(400).json({ success: false, message: "Order must be fully paid before it can be completed" });
   }
 
+  const previousOrderStatus = order.orderStatus;
   order.statusHistory.push({ previousStatus: order.orderStatus, newStatus: status, changedBy: req.user._id });
   order.orderStatus = status;
 
@@ -280,6 +282,14 @@ async function updateStatus(req, res) {
 
   getIO(req)?.emit("order:status", { orderId: order._id, orderNumber: order.orderNumber, status: order.orderStatus });
   await recordAudit({ user: req.user, action: "UPDATE_STATUS", module: "ORDERS", recordId: order._id, newValue: { status: order.orderStatus }, ip: req.ip });
+
+  // Fire-and-forget: notify the customer their food is ready without blocking this response.
+  // Only on a genuine non-READY -> READY transition; a failed send never rolls back orderStatus.
+  if (order.orderStatus === "READY" && previousOrderStatus !== "READY") {
+    whatsappService.sendFoodReadyNotification(order, { io: getIO(req) }).catch((err) => {
+      console.error("WhatsApp food-ready notification error:", err.message);
+    });
+  }
 
   res.json({ success: true, message: `Order status updated to ${order.orderStatus}`, data: order });
 }
@@ -375,6 +385,38 @@ async function listBillRequests(req, res) {
   res.json({ success: true, message: "OK", data: billRequests });
 }
 
+const WHATSAPP_NOTIFICATION_LOG_STATUSES = ["sending", "sent", "delivered", "read", "failed", "skipped"];
+
+async function listWhatsAppNotifications(req, res) {
+  const { status, search, page = 1, limit = 50 } = req.query;
+
+  const query = {
+    "whatsappNotification.foodReady.status": status ? status : { $in: WHATSAPP_NOTIFICATION_LOG_STATUSES },
+  };
+
+  if (search) {
+    const matchingCustomers = await Customer.find({
+      $or: [{ name: { $regex: search, $options: "i" } }, { phone: { $regex: search, $options: "i" } }],
+    }).select("_id");
+    query.$or = [
+      { orderNumber: { $regex: search, $options: "i" } },
+      { customer: { $in: matchingCustomers.map((c) => c._id) } },
+    ];
+  }
+
+  const [data, total] = await Promise.all([
+    Order.find(query)
+      .select("orderNumber orderType counter orderStatus customer whatsappNotification createdAt updatedAt")
+      .populate("customer", "name phone")
+      .sort({ updatedAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit)),
+    Order.countDocuments(query),
+  ]);
+
+  res.json({ success: true, message: "OK", data, meta: { total, page: Number(page), limit: Number(limit) } });
+}
+
 async function clearTable(req, res) {
   const order = await Order.findById(req.params.id);
   if (!order) return res.status(404).json({ success: false, message: "Order not found" });
@@ -397,6 +439,7 @@ module.exports = {
   requestBill,
   processBill,
   listBillRequests,
+  listWhatsAppNotifications,
   clearTable,
   deductInventoryForOrder,
   ORDER_TRANSITIONS,

@@ -6,6 +6,7 @@ const authorize = require("../middleware/roleMiddleware");
 router.use(protect);
 router.get("/", ctrl.list);
 router.get("/bill-requests/list", authorize("OWNER", "MANAGER", "CASHIER"), ctrl.listBillRequests);
+router.get("/whatsapp/notifications", authorize("OWNER", "MANAGER", "CASHIER"), ctrl.listWhatsAppNotifications);
 router.get("/:id", ctrl.getOne);
 router.post("/", authorize("OWNER", "MANAGER", "CASHIER"), ctrl.create);
 router.put("/:id/items", authorize("OWNER", "MANAGER", "CASHIER"), ctrl.updateItems);

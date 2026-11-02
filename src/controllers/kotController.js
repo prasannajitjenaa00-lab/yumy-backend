@@ -2,6 +2,7 @@ const KOT = require("../models/KOT");
 const Order = require("../models/Order");
 const generateKOTNumber = require("../utils/generateKOTNumber");
 const { recordAudit } = require("../middleware/auditMiddleware");
+const whatsappService = require("../services/whatsappService");
 
 const KOT_TRANSITIONS = {
   PENDING: ["SENT", "ACCEPTED", "CANCELLED"],
@@ -26,7 +27,7 @@ async function list(req, res) {
     .populate("createdBy", "name role email phone")
     .populate({
       path: "order",
-      select: "orderNumber orderType orderStatus counter notes customer createdBy paymentStatus paymentMethod",
+      select: "orderNumber orderType orderStatus counter notes customer createdBy paymentStatus paymentMethod whatsappNotification",
       populate: { path: "createdBy customer", select: "name role phone" }
     })
     .sort({ createdAt: 1 });
@@ -71,7 +72,7 @@ async function send(req, res) {
     { path: "createdBy", select: "name role email phone" },
     {
       path: "order",
-      select: "orderNumber orderType orderStatus counter notes customer createdBy paymentStatus paymentMethod",
+      select: "orderNumber orderType orderStatus counter notes customer createdBy paymentStatus paymentMethod whatsappNotification",
       populate: { path: "createdBy customer", select: "name role phone" },
     },
   ]);
@@ -95,6 +96,7 @@ async function updateStatus(req, res) {
 
   const order = await Order.findById(kot.order);
   if (order) {
+    const previousOrderStatus = order.orderStatus;
     const kotItemIds = kot.items.map((i) => String(i.menuItem));
     order.items.forEach((i) => {
       if (kotItemIds.includes(String(i.menuItem))) i.kotStatus = status;
@@ -116,13 +118,21 @@ async function updateStatus(req, res) {
     }
     await order.save();
     getIO(req)?.emit("order:status", { orderId: order._id, orderNumber: order.orderNumber, status: order.orderStatus });
+
+    // Fire-and-forget: notify the customer their food is ready without blocking the KDS response.
+    // Only on a genuine non-READY -> READY transition; a failed send never rolls back orderStatus.
+    if (order.orderStatus === "READY" && previousOrderStatus !== "READY") {
+      whatsappService.sendFoodReadyNotification(order, { io: getIO(req) }).catch((err) => {
+        console.error("WhatsApp food-ready notification error:", err.message);
+      });
+    }
   }
 
   await kot.populate([
     { path: "createdBy", select: "name role email phone" },
     {
       path: "order",
-      select: "orderNumber orderType orderStatus notes customer createdBy paymentStatus paymentMethod",
+      select: "orderNumber orderType orderStatus notes customer createdBy paymentStatus paymentMethod whatsappNotification",
       populate: { path: "createdBy customer", select: "name role phone" },
     },
   ]);

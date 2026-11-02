@@ -11,6 +11,7 @@ const customerSchema = new mongoose.Schema(
     lastOrderAt: { type: Date },
     loyaltyPoints: { type: Number, default: 0 },
     notes: { type: String, trim: true },
+    whatsappOptIn: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

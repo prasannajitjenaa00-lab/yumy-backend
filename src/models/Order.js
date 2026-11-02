@@ -27,6 +27,18 @@ const statusHistorySchema = new mongoose.Schema(
   { _id: false }
 );
 
+const WHATSAPP_NOTIFICATION_STATUSES = ["pending", "sending", "sent", "delivered", "read", "failed", "skipped"];
+
+const whatsappNotificationEventSchema = new mongoose.Schema(
+  {
+    status: { type: String, enum: WHATSAPP_NOTIFICATION_STATUSES, default: "pending" },
+    messageId: { type: String, default: null },
+    sentAt: { type: Date, default: null },
+    error: { type: String, default: null },
+  },
+  { _id: false }
+);
+
 const orderSchema = new mongoose.Schema(
   {
     orderNumber: { type: String, required: true, unique: true },
@@ -52,14 +64,19 @@ const orderSchema = new mongoose.Schema(
     cancelReason: { type: String, trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     statusHistory: { type: [statusHistorySchema], default: [] },
+    whatsappNotification: {
+      foodReady: { type: whatsappNotificationEventSchema, default: () => ({}) },
+    },
   },
   { timestamps: true }
 );
 
 orderSchema.index({ createdAt: 1 });
 orderSchema.index({ orderStatus: 1 });
+orderSchema.index({ "whatsappNotification.foodReady.messageId": 1 });
 
 module.exports = mongoose.model("Order", orderSchema);
 module.exports.ORDER_STATUSES = ORDER_STATUSES;
 module.exports.PAYMENT_STATUSES = PAYMENT_STATUSES;
 module.exports.ORDER_TYPES = ORDER_TYPES;
+module.exports.WHATSAPP_NOTIFICATION_STATUSES = WHATSAPP_NOTIFICATION_STATUSES;
