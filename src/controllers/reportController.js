@@ -111,13 +111,19 @@ async function paymentReport(req, res) {
 
 async function pettyCashReport(req, res) {
   const { start, end } = dateRange(req);
+  const allPastTx = await PettyCash.find({ createdAt: { $lt: start } });
+  const openingBalance = round2(
+    allPastTx.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0) -
+    allPastTx.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0)
+  );
+
   const transactions = await PettyCash.find({ createdAt: { $gte: start, $lte: end } })
     .populate("paidBy", "name email role")
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: 1 });
 
   const totalCashIn = round2(transactions.filter((t) => t.type === "CASH_IN").reduce((s, t) => s + t.amount, 0));
   const totalCashOut = round2(transactions.filter((t) => t.type === "CASH_OUT").reduce((s, t) => s + t.amount, 0));
-  const netBalance = round2(totalCashIn - totalCashOut);
+  const closingBalance = round2(openingBalance + totalCashIn - totalCashOut);
 
   const byCategory = {};
   transactions
@@ -126,16 +132,47 @@ async function pettyCashReport(req, res) {
       byCategory[t.category] = round2((byCategory[t.category] || 0) + t.amount);
     });
 
+  // Daily carry-forward ledger calculation
+  const dayGroups = {};
+  transactions.forEach((tx) => {
+    const dayKey = tx.createdAt.toISOString().slice(0, 10);
+    if (!dayGroups[dayKey]) {
+      dayGroups[dayKey] = { date: dayKey, in: 0, out: 0, count: 0 };
+    }
+    if (tx.type === "CASH_IN") dayGroups[dayKey].in = round2(dayGroups[dayKey].in + tx.amount);
+    if (tx.type === "CASH_OUT") dayGroups[dayKey].out = round2(dayGroups[dayKey].out + tx.amount);
+    dayGroups[dayKey].count += 1;
+  });
+
+  const sortedDays = Object.keys(dayGroups).sort();
+  let prevClose = openingBalance;
+  const dailyLedger = sortedDays.map((d) => {
+    const g = dayGroups[d];
+    const dayOpen = prevClose;
+    const dayClose = round2(dayOpen + g.in - g.out);
+    prevClose = dayClose;
+    return {
+      date: d,
+      openingBalance: dayOpen,
+      cashIn: g.in,
+      cashOut: g.out,
+      closingBalance: dayClose,
+      count: g.count,
+    };
+  });
+
   res.json({
     success: true,
     message: "OK",
     data: {
+      openingBalance, // Starting balance before period
       totalCashIn,
       totalCashOut,
-      netBalance,
+      netBalance: closingBalance, // Ending balance after period
       totalTransactions: transactions.length,
       byCategory,
-      transactions,
+      dailyLedger: dailyLedger.reverse(),
+      transactions: transactions.reverse(),
     },
   });
 }
